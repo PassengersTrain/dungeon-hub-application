@@ -17,13 +17,14 @@ import net.dungeonhub.connection.*
 import net.dungeonhub.enums.RoleRequirementType
 import net.dungeonhub.enums.ScoreType
 import net.dungeonhub.hypixel.connection.HypixelApiConnection
+import net.dungeonhub.hypixel.entities.player.KnownRank
 import net.dungeonhub.hypixel.entities.skyblock.CurrentMember
 import net.dungeonhub.hypixel.entities.skyblock.KnownSkill
-import net.dungeonhub.hypixel.entities.player.KnownRank
 import net.dungeonhub.model.discord_role.DiscordRoleModel
 import net.dungeonhub.model.discord_role_group.DiscordRoleGroupModel
 import net.dungeonhub.model.role_requirement.RoleRequirementModel
 import java.util.stream.Collectors
+import kotlin.math.roundToInt
 import kotlin.time.Duration
 
 object RolesService {
@@ -118,6 +119,8 @@ object RolesService {
     fun checkRoleRequirement(roleRequirement: RoleRequirementModel, member: Member, cacheExpiration: Int): Boolean {
         if (!roleRequirement.checkExtraData()) return false
 
+        val hypixelApiConnection = HypixelApiConnection().withCacheExpiration(cacheExpiration)
+
         val discordServer = DiscordServerConnection.findServerById(member.guild.id.value.toLong())
             ?: return false
 
@@ -127,13 +130,16 @@ object RolesService {
         val uuid = discordUser.minecraftId
             ?: return false
 
-        val profiles =
-            HypixelApiConnection().withCacheExpiration(cacheExpiration).getSkyblockProfiles(uuid) ?: return false
+        val profiles = hypixelApiConnection.getSkyblockProfiles(uuid) ?: return false
 
         val profileMembers = profiles.profiles.mapNotNull { it.members.firstOrNull { member -> member.uuid == uuid } }
             .filterIsInstance<CurrentMember>()
 
-        val playerData = HypixelApiConnection().withCacheExpiration(cacheExpiration).getPlayerData(uuid) ?: return false
+        val playerData = hypixelApiConnection.getPlayerData(uuid) ?: return false
+
+        val guild by lazy {
+            roleRequirement.extraData?.let { HypixelApiConnection().withCacheExpiration(5).getGuild(it) }
+        }
 
         //TODO add check for legendary griffin pet
         return when (roleRequirement.requirementType) {
@@ -271,7 +277,7 @@ object RolesService {
             RoleRequirementType.HypixelRank -> {
                 val rank = playerData.rank
 
-                if(rank !is KnownRank) return false
+                if (rank !is KnownRank) return false
 
                 return roleRequirement.compare(
                     rank.ordinal
@@ -279,13 +285,15 @@ object RolesService {
             }
 
             RoleRequirementType.GuildMembership -> {
-                //TODO complete once guild mapping is complete in the hypixel wrapper
-                return false
+                return roleRequirement.compare(
+                    if (guild?.members?.any { it.uuid == uuid } == true) 1 else 0
+                )
             }
 
             RoleRequirementType.GuildRank -> {
-                //TODO complete once guild mapping is complete in the hypixel wrapper
-                return false
+                return roleRequirement.compare(
+                    guild?.members?.firstOrNull { it.uuid == uuid }?.rank?.priority ?: 0
+                )
             }
 
             RoleRequirementType.MagicalPower -> {
@@ -301,8 +309,9 @@ object RolesService {
             }
 
             RoleRequirementType.HighestCritDamage -> {
-                // TODO complete when mapping is complete
-                return false
+                return roleRequirement.compare(
+                    profileMembers.maxOf { it.playerStats?.highestCritDamage ?: 0.0 }.roundToInt()
+                )
             }
         }
     }
